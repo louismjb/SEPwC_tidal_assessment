@@ -44,26 +44,50 @@ def extract_single_year_remove_mean(year, data):
     Extracts data for a specific year and removes the annual mean.
 
     Args:
-        year (int or str): The year to extract.
-        data (pd.DataFrame): The input dataframe with a DatetimeIndex.
+        year (int or str): The year to extract (e.g., 2012 or '2012').
+        data (pd.DataFrame): Input dataframe with a pandas DatetimeIndex.
 
     Returns:
-        pd.DataFrame: A copy of the data for the specified year with the mean removed.
+        pd.DataFrame: A copy of the data for the specified year with the 
+            mean of the 'Sea Level' column subtracted from all values.
     """
-    # Select only the rows for the given year and create a deep copy
+    # Use .loc with string conversion to slice the DatetimeIndex efficiently.
+    # .copy() is essential to prevent a SettingWithCopyWarning.
     year_data = data.loc[str(year)].copy()
 
-    # Calculate the mean sea level, automatically skipping any NaN values
+    # Calculate the mean. Pandas .mean() excludes NaNs by default (skipna=True).
     annual_mean = year_data['Sea Level'].mean()
 
-    # Subtract the mean from the 'Sea Level' column (Broadcasting)
-    year_data['Sea Level'] = year_data['Sea Level'] - annual_mean
+    # Subtract the mean. We use the subtraction operator which is standard,
+    # but we ensure we are targeting the specific column.
+    year_data['Sea Level'] -= annual_mean
 
     return year_data
 
 def extract_section_remove_mean(start, end, data):
+    """
+    Extracts a specific time range and removes the mean of that section.
 
-    return year_data
+    Args:
+        start (str): Start date/time (e.g., '2012-01-01 00:00').
+        end (str): End date/time (e.g., '2012-12-31 23:00').
+        data (pd.DataFrame): Dataframe with a DatetimeIndex.
+
+    Returns:
+        pd.DataFrame: A new dataframe containing the sliced and centered data.
+    """
+    # Slice the dataframe using the DatetimeIndex
+    # This creates a copy to avoid modifying the original 'data' object
+    section = data.loc[start:end].copy()
+
+    # Calculate the mean of the Sea Level column
+    # skipna=True is the default, which is good for our NaN values
+    section_mean = section['Sea Level'].mean()
+
+    # Subtract the mean from the Sea Level column to center it at 0
+    section['Sea Level'] = section['Sea Level'] - section_mean
+
+    return section 
 
 
 def join_data(data1, data2):
