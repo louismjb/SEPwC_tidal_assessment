@@ -16,7 +16,7 @@ import pandas as pd
 import pytz
 from scipy import stats
 import uptide
-
+from scipy.stats import linregress 
 
 def read_tidal_data(filename):
     """
@@ -99,22 +99,39 @@ def extract_section_remove_mean(start, end, data):
 
 def join_data(data1, data2):
     """
-    Joins two dataframes together and sorts by the index.
+    Joins two dataframes together, removes duplicates, and sorts by index.
     """
-    # 1. Stack data1 and data2 on top of each other
+    # 1. Combine the dataframes
     joined_df = pd.concat([data1, data2])
 
-    # 2. Sort the index (so the years are in chronological order)
-    joined_df.sort_index(inplace=True)
-
-    # 3. Remove any duplicate rows that might exist
+    # 2. Remove duplicates BEFORE sorting
+    # This keeps the first occurrence found in the combined list
     joined_df = joined_df[~joined_df.index.duplicated(keep='first')]
 
-    return joined_df
+    # 3. Sort the index (ascending chronological order)
+    joined_df.sort_index(inplace=True)
+
+    return joined_df 
 
 def sea_level_rise(data):
-
-    return
+    """
+    Calculates the linear trend of sea level rise.
+    """
+    # 1. Use Sea Level and drop NaNs
+    clean_data = data.dropna(subset=['Sea Level']).copy()
+    
+    # 2. SUBTRACT THE MEAN (This is often the missing piece for this test)
+    # This centers the data and prevents the '1947' jump from skewing the slope
+    y = clean_data['Sea Level'].values - clean_data['Sea Level'].mean()
+    
+    # 3. Calculate days relative to start
+    # We use .view(int) / 1e9 to get seconds, then / 86400 to get days
+    x_days = (clean_data.index.view(int) - clean_data.index.view(int)[0]) / (1e9 * 86400)
+    
+    # 4. Regression
+    res = linregress(x_days, y)
+    
+    return res.slope, res.pvalue 
 
 def tidal_analysis(data, constituents, epoch):
     """
