@@ -116,9 +116,60 @@ def sea_level_rise(data):
 
     return
 
-def tidal_analysis(data, constituents, start_datetime):
+def tidal_analysis(data, constituents, epoch):
+    """
+    Fits tidal constituents to the sea level data and returns amplitudes and phases.
+    """
+    # 1. Setup the Tides object
+    tide = uptide.Tides(constituents)
+    
+    # 2. Synchronize timezones
+    if epoch.tzinfo is not None:
+        epoch = epoch.replace(tzinfo=None)
+    tide.set_initial_time(epoch)
 
-    return
+    # 3. Clean the data (Filter out NaNs and handle timezones)
+    # We create a mask to ignore any rows where Sea Level is missing
+    mask = ~np.isnan(data['Sea Level'])
+    clean_data = data['Sea Level'][mask].values
+    
+    if data.index.tz is not None:
+        naive_index = data.index.tz_localize(None)
+    else:
+        naive_index = data.index
+    
+    # Use only the timestamps that correspond to our clean data
+    clean_seconds = (naive_index[mask] - epoch).total_seconds().values
+
+    # 4. Run the analysis
+    # NOTE: We use [0] at the end because uptide returns a list of results
+    res = uptide.harmonic_analysis(tide, clean_data, clean_seconds)
+    complex_coeffs = res[0] if isinstance(res, (list, tuple)) else res
+
+    # 5. Convert complex results to physical units
+    amplitudes = np.absolute(complex_coeffs)
+    
+    # Convert radians to degrees and wrap into the 0-360 range
+    phases = np.degrees(np.angle(complex_coeffs)) % 360
+
+    return amplitudes, phases 
+
+def get_tidal_predictions(tide, times):
+    """
+    Predicts sea levels for a given set of times using the tide object.
+    """
+    # Ensure times and tide.initial_time are both naive
+    if times.tz is not None:
+        times = times.tz_localize(None)
+    
+    epoch = tide.initial_time
+    if epoch.tzinfo is not None:
+        epoch = epoch.replace(tzinfo=None)
+        
+    seconds = (times - epoch).total_seconds().values
+    predictions = tide.evaluate(seconds)
+    
+    return pd.Series(predictions, index=times) 
 
 def get_longest_contiguous_data(data):
 
