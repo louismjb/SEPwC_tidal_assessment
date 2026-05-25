@@ -1,14 +1,21 @@
-# import the modules we need
-import pandas as pd
-import datetime
-import os
-import numpy as np
-import uptide
-import pytz
-import math
-from scipy import stats
-import matplotlib.dates as mdates
+"""
+Tidal Analysis Module
+This script provides functions to read, join, and analyze sea-level data
+using tidal constituent analysis.
+"""
+# Standard library imports
 import argparse
+import datetime
+import math
+import os
+
+# Third-party library imports
+import matplotlib.dates as mdates
+import numpy as np
+import pandas as pd
+import pytz
+from scipy import stats
+import uptide
 
 
 def read_tidal_data(filename):
@@ -18,27 +25,27 @@ def read_tidal_data(filename):
     # 1. Read the file
     # We use r'\s+' for the separator and names=... to label the columns
     column_names = ['Cycle', 'Date', 'Time', 'Sea Level', 'Residual']
-    
-    df = pd.read_csv(filename, 
-                     skiprows=11, 
-                     sep=r'\s+', 
-                     header=None, 
+
+    df = pd.read_csv(filename,
+                     skiprows=11,
+                     sep=r'\s+',
+                     header=None,
                      names=column_names)
-    
+
     # Combine Date and Time columns into one
     df['Datetime'] = pd.to_datetime(df['Date'] + ' ' + df['Time'])
-    
+
     # Set the Datetime column as the index
     df.set_index('Datetime', inplace=True)
-    
+
     # Replace values ending in M, T, or N with NaN (Not a Number)
     df.replace(to_replace="[a-zA-Z]$", value={'Sea Level': np.nan}, regex=True, inplace=True)
-    
+
     # Ensure the Sea Level column is treated as numbers (floats)
     df['Sea Level'] = pd.to_numeric(df['Sea Level'], errors='coerce')
-    
+
     return df
-    
+
 def extract_single_year_remove_mean(year, data):
     """
     Extracts data for a specific year and removes the annual mean.
@@ -48,7 +55,7 @@ def extract_single_year_remove_mean(year, data):
         data (pd.DataFrame): Input dataframe with a pandas DatetimeIndex.
 
     Returns:
-        pd.DataFrame: A copy of the data for the specified year with the 
+        pd.DataFrame: A copy of the data for the specified year with the
             mean of the 'Sea Level' column subtracted from all values.
     """
     # Use .loc with string conversion to slice the DatetimeIndex efficiently.
@@ -87,7 +94,7 @@ def extract_section_remove_mean(start, end, data):
     # Subtract the mean from the Sea Level column to center it at 0
     section['Sea Level'] = section['Sea Level'] - section_mean
 
-    return section 
+    return section
 
 
 def join_data(data1, data2):
