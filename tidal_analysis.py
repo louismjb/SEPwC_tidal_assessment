@@ -143,35 +143,79 @@ def get_tidal_predictions(tide, times):
 
     return pd.Series(predictions, index=times)
 
+def calculate_tidal_components(data):
+    """
+    Calculates the M2 and S2 tidal amplitudes using harmonic analysis.
+
+    Returns:
+        tuple: (m2_amplitude, s2_amplitude)
+    """
+    # Remove rows with missing sea level data
+    clean_data = data.dropna(subset=['Sea Level'])
+
+    # Convert index to seconds since the first measurement for the solver
+    t_seconds = (clean_data.index - clean_data.index[0]).total_seconds().values
+    levels = clean_data['Sea Level'].values
+
+    # Initialize the analyzer for M2 (Moon) and S2 (Sun)
+    tide = uptide.Tides(['M2', 'S2'])
+    tide.set_initial_guess(levels)  # pylint: disable=no-member
+
+    # Solve for the amplitudes
+    amp, _ = uptide.harmonic_analysis(tide, levels, t_seconds)
+
+    return amp[0], amp[1]
+
 def main(args_list=None):
     """
-    Main entry point for the tidal analysis script.
+    Calculates M2 and S2 components.
     """
-
+    # 1. Setup the Parser
     parser = argparse.ArgumentParser(description='Analyze tidal data')
     parser.add_argument('directory', help='Directory containing tidal data')
+    parser.add_argument('-v', '--verbose', action='store_true', help='Output to screen')
 
-    # Use parse_known_args to handle pytest's extra arguments gracefully
-    args, _unknown = parser.parse_known_args(args_list)
+    args, _ = parser.parse_known_args(args_list)
+
+    # 2. Find the files
     folder = args.directory
+    files = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.txt')])
 
-    if not os.path.exists(folder):
-        return
-
-    # Identify if we are in the Dover directory to satisfy the "quiet" test
-    is_dover = "dover" in folder.lower()
-
-    # Get the files and process them
-    files = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.txt')]
-
-    for file_path in sorted(files):
+    # 3. Process each file and collect results
+    all_results = []
+    for file_path in files:
+        # Load the data
         data = read_tidal_data(file_path)
-        slope, p_value = sea_level_rise(data)
 
-        # Only print if this is NOT the Dover directory
-        if not is_dover:
-            print(f"File: {os.path.basename(file_path)}")
-            print(f"Slope: {slope}, P-value: {p_value}")
+        # Perform the scientific calculations
+        slope, _ = sea_level_rise(data)
+        m2, s2 = calculate_tidal_components(data)
+
+        # Prepare the output string
+        file_name = os.path.basename(file_path)
+        output_line = (f"{file_name}: M2 amplitude {m2:.3f}m, "
+                       f"S2 amplitude {s2:.3f}m, "
+                       f"Sea-level rise {slope:.2e} m/day")
+
+        # 1. Store the result in our list (Fixes the "unused variable" error)
+        all_results.append(output_line)
+
+        # 2. Print only if the verbose flag is set
+        if args.verbose:
+            print(output_line)
+
+   # 3. Handle the final output after the loop is done
+    if not args.verbose and all_results:
+        # Create a filename based on the directory name (e.g., 'dover_report.txt')
+        # normpath handles cases where there's a trailing slash
+        folder_name = os.path.basename(os.path.normpath(folder))
+        report_name = f"{folder_name}_report.txt"
+
+        with open(report_name, 'w', encoding='utf-8') as f:
+            for line in all_results:
+                f.write(line + '\n')
+
+        print(f"Analysis complete. Results saved to {report_name}")
 
 if __name__ == '__main__':
     main()
