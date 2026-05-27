@@ -1,16 +1,19 @@
 """
-Tidal Analysis Module
-This script provides functions to read, join, and analyze sea-level data
-using tidal constituent analysis.
+Tidal Analysis Tool
+Author: Louis Johnson Brickhill
+Description: This script performs harmonic analysis and sea-level rise 
+             calculations on BODC format tidal data files.
+Usage: python3 tidal_analysis.py [-v] <directory_path>
 """
 # Standard library imports
 import argparse
-import os
 # Kept to prevent a NameError in test_tides.py due to a missing test dependency
 import datetime  # pylint: disable=unused-import
-import matplotlib.dates as mdates
+import os
+import sys
 
-# Third-party library imports
+# Third-party imports
+import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
 import uptide
@@ -237,40 +240,50 @@ def main(args_list=None):
     args, _ = parser.parse_known_args(args_list)
 
     folder = args.directory
-    files = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.txt')])
+    sys.stderr.write(f"Scanning directory: {folder}\n")
 
-    # Load and join all data for the station
+    files = sorted([os.path.join(folder, f) for f in os.listdir(folder)
+                   if f.endswith('.txt')])
+
+    if not files:
+        sys.stderr.write("Error: No .txt files found in directory.\n")
+        return
+
+    sys.stderr.write(f"Loading {len(files)} files...\n")
+
     full_data = pd.DataFrame()
-    for f in files:
-        year_data = read_tidal_data(f)
-        full_data = pd.concat([full_data, year_data])
+    for f_path in files:
+        full_data = pd.concat([full_data, read_tidal_data(f_path)])
 
-    # Ensure it's sorted and no duplicates
     full_data = full_data.sort_index()
     full_data = full_data[~full_data.index.duplicated(keep='first')]
 
-    # Perform Analysis
-    m2, s2 = calculate_tidal_components(full_data)
-    slope_per_day, _ = sea_level_rise(full_data)
-    rise_per_year = slope_per_day * 365.25
+    sys.stderr.write("Computing tidal analysis and regression...\n")
+
+    # PACKING: We unpack directly into the f-string later or use results index
+    tides = calculate_tidal_components(full_data)
+    regr_results = sea_level_rise(full_data)
     longest_stretch = find_longest_contiguous_period(full_data)
 
-    # Format Output
-    station_name = os.path.basename(os.path.normpath(folder)).capitalize()
+    station = os.path.basename(os.path.normpath(folder)).capitalize()
     output = (
-        f"Station: {station_name}\n"
-        f"M2 amplitude: {m2:.3f} m\n"
-        f"S2 amplitude: {s2:.3f} m\n"
-        f"Sea-level rise: {rise_per_year:.4f} m/year\n"
-        f"Longest contiguous period: {longest_stretch} records"
+        f"Station: {station}\n"
+        f"M2 amplitude: {tides[0]:.3f} m\n"
+        f"S2 amplitude: {tides[1]:.3f} m\n"
+        f"Sea-level rise: {regr_results[0] * 365.25:.4f} m/year\n"
+        f"Longest contiguous period: {longest_stretch} records\n"
+        f"Total valid records: {len(full_data)}"
     )
 
     if args.verbose:
         print(output)
     else:
-        # Save to file as per rules
-        with open(f"{station_name.lower()}_report.txt", "w", encoding="utf-8") as f:
-            f.write(output)
+        report_file = f"{station.lower()}_report.txt"
+        with open(report_file, "w", encoding="utf-8") as out_file:
+            out_file.write(output)
+        sys.stderr.write(f"Report saved to {report_file}\n")
+
+    sys.stderr.write("Analysis complete.\n")
 
 if __name__ == '__main__':
     main()
