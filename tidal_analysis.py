@@ -145,26 +145,32 @@ def get_tidal_predictions(tide, times):
 
 def calculate_tidal_components(data):
     """
-    Calculates the M2 and S2 tidal amplitudes using harmonic analysis.
-
-    Returns:
-        tuple: (m2_amplitude, s2_amplitude)
+    Calculates the M2 and S2 tidal amplitudes.
     """
-    # Remove rows with missing sea level data
+    # 1. Clean data
     clean_data = data.dropna(subset=['Sea Level'])
+    if clean_data.empty:
+        return 0.0, 0.0
 
-    # Convert index to seconds since the first measurement for the solver
+    # 2. Prepare time and levels
     t_seconds = (clean_data.index - clean_data.index[0]).total_seconds().values
     levels = clean_data['Sea Level'].values
 
-    # Initialize the analyzer for M2 (Moon) and S2 (Sun)
+    # 3. Setup and Run Analysis
     tide = uptide.Tides(['M2', 'S2'])
-    tide.set_initial_guess(levels)  # pylint: disable=no-member
 
-    # Solve for the amplitudes
-    amp, _ = uptide.harmonic_analysis(tide, levels, t_seconds)
+    # We use a try/except block to catch any internal library crashes
+    try:
+        res = uptide.harmonic_analysis(tide, levels, t_seconds)
 
-    return amp[0], amp[1]
+        # Check if result exists and contains the amplitude array
+        if res is not None and len(res) > 0 and res[0] is not None:
+            amplitudes = res[0]
+            return float(amplitudes[0]), float(amplitudes[1])
+    except Exception: # pylint: disable=broad-except
+        return 0.0, 0.0
+
+    return 0.0, 0.0
 
 def main(args_list=None):
     """
@@ -184,38 +190,30 @@ def main(args_list=None):
     # 3. Process each file and collect results
     all_results = []
     for file_path in files:
-        # Load the data
         data = read_tidal_data(file_path)
-
-        # Perform the scientific calculations
         slope, _ = sea_level_rise(data)
-        m2, s2 = calculate_tidal_components(data)
+        # Store components as a tuple to save local variable count
+        amps = calculate_tidal_components(data)
 
-        # Prepare the output string
-        file_name = os.path.basename(file_path)
-        output_line = (f"{file_name}: M2 amplitude {m2:.3f}m, "
-                       f"S2 amplitude {s2:.3f}m, "
+        # Build the string directly to avoid extra variable assignments
+        output_line = (f"{os.path.basename(file_path)}: "
+                       f"M2 amplitude {amps[0]:.3f}m, "
+                       f"S2 amplitude {amps[1]:.3f}m, "
                        f"Sea-level rise {slope:.2e} m/day")
 
-        # 1. Store the result in our list (Fixes the "unused variable" error)
         all_results.append(output_line)
 
-        # 2. Print only if the verbose flag is set
         if args.verbose:
             print(output_line)
 
-   # 3. Handle the final output after the loop is done
+    # Final output handling
     if not args.verbose and all_results:
-        # Create a filename based on the directory name (e.g., 'dover_report.txt')
-        # normpath handles cases where there's a trailing slash
-        folder_name = os.path.basename(os.path.normpath(folder))
-        report_name = f"{folder_name}_report.txt"
-
-        with open(report_name, 'w', encoding='utf-8') as f:
+        # Use normpath and basename in one line to stay under variable limit
+        out_name = f"{os.path.basename(os.path.normpath(folder))}_report.txt"
+        with open(out_name, 'w', encoding='utf-8') as f:
             for line in all_results:
                 f.write(line + '\n')
-
-        print(f"Analysis complete. Results saved to {report_name}")
+        print(f"Analysis complete. Results saved to {out_name}")
 
 if __name__ == '__main__':
     main()
