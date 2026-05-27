@@ -77,27 +77,23 @@ def join_data(data1, data2):
 
 def sea_level_rise(data):
     """
-    Calculates the linear trend of sea level rise using centered Sea Level data.
+    Calculates the slope of sea level rise in meters per day.
     """
-    # 1. Sort and clean using 'Sea Level'
-    sorted_data = data.sort_index()
-    clean_data = sorted_data.dropna(subset=['Sea Level']).copy()
+    # Ensure we aren't working with an empty slice
+    clean_data = data.dropna(subset=['Sea Level'])
 
-    # 2. Filter out the -99.0 sensor error flags
-    clean_data = clean_data[clean_data['Sea Level'] > -10]
+    if len(clean_data) < 2:
+        # We need at least two points for a line
+        return 0.0, 1.0
 
-    # 3. Calculate days from the earliest timestamp
-    t_start = clean_data.index.min()
-    x_days = (clean_data.index - t_start).total_seconds().values / 86400.0
+    # High precision time calculation
+    # Using .index[0] on clean_data ensures we start at the first valid point
+    t_start = clean_data.index[0]
+    days = (clean_data.index - t_start).total_seconds() / 86400.0
 
-    # 4. Use Sea Level and SUBTRACT the mean
-    # This "centers" the data at zero and is a common requirement for these tests
-    y = clean_data['Sea Level'].values - clean_data['Sea Level'].mean()
+    slope, _, _, _, p_value = linregress(days, clean_data['Sea Level'])
 
-    # 5. Perform the linear regression
-    res = linregress(x_days, y)
-
-    return res.slope, res.pvalue
+    return slope, p_value
 
 def tidal_analysis(data, constituents, epoch):
     """
@@ -149,7 +145,7 @@ def calculate_tidal_components(data):
     """
     # 1. Clean data
     clean_data = data.dropna(subset=['Sea Level'])
-    if clean_data.empty:
+    if len(clean_data) == 0:
         return 0.0, 0.0
 
     # 2. Prepare time and levels
@@ -192,10 +188,9 @@ def main(args_list=None):
     for file_path in files:
         data = read_tidal_data(file_path)
         slope, _ = sea_level_rise(data)
-        # Store components as a tuple to save local variable count
         amps = calculate_tidal_components(data)
 
-        # Build the string directly to avoid extra variable assignments
+        # Exact formatting for the output string
         output_line = (f"{os.path.basename(file_path)}: "
                        f"M2 amplitude {amps[0]:.3f}m, "
                        f"S2 amplitude {amps[1]:.3f}m, "
@@ -206,14 +201,12 @@ def main(args_list=None):
         if args.verbose:
             print(output_line)
 
-    # Final output handling
+    # Final output handling - SILENT unless verbose
     if not args.verbose and all_results:
-        # Use normpath and basename in one line to stay under variable limit
         out_name = f"{os.path.basename(os.path.normpath(folder))}_report.txt"
         with open(out_name, 'w', encoding='utf-8') as f:
             for line in all_results:
                 f.write(line + '\n')
-        print(f"Analysis complete. Results saved to {out_name}")
 
 if __name__ == '__main__':
     main()
