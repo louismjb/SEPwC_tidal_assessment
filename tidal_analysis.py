@@ -15,32 +15,20 @@ import pandas as pd
 import uptide
 from scipy.stats import linregress
 
-def read_tidal_data(filename):
-    """
-    Reads tidal data, handles 'M'/'T' flags, and merges Date/Time manually.
-    """
-    column_names = ['Cycle', 'Date', 'Time', 'Sea Level', 'Residual']
-
-    # 1. Read the file without parse_dates to avoid the TypeError
-    df = pd.read_csv(filename,
-                     skiprows=11,
-                     sep=r'\s+',
-                     header=None,
-                     names=column_names)
-
-    # 2. Combine Date and Time manually
-    # We use .astype(str) to ensure no weird type issues during concatenation
-    df['Datetime'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Time'].astype(str))
-    df.set_index('Datetime', inplace=True)
-
-    # 3. Clean columns and handle flags
-    for col in ['Sea Level', 'Residual']:
-        if df[col].dtype == object:
-            # Extract digits, signs, and decimals only
-            df[col] = df[col].astype(str).str.extract(r'([-+]?\d*\.\d+|\d+)')[0]
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    return df
+def read_tidal_data(file_path):
+    # Using names that match your BODC image exactly
+    data = pd.read_csv(
+        file_path, 
+        sep=r'\s+', 
+        skiprows=11, 
+        names=['RowID', 'Date', 'Time', 'Sea Level', 'Residual'],
+        usecols=['Date', 'Time', 'Sea Level']
+    )
+    # Convert 'M', 'T', 'N' to NaN and drop them
+    data['Sea Level'] = pd.to_numeric(data['Sea Level'], errors='coerce')
+    data['datetime'] = pd.to_datetime(data['Date'] + ' ' + data['Time'], errors='coerce')
+    data.set_index('datetime', inplace=True)
+    return data.dropna(subset=['Sea Level'])
 
 def extract_single_year_remove_mean(year, data):
     """
@@ -141,72 +129,104 @@ def get_tidal_predictions(tide, times):
 
 def calculate_tidal_components(data):
     """
-    Calculates the M2 and S2 tidal amplitudes.
+    Fits M2 and S2 tidal cycles to the data.
     """
-    # 1. Clean data
+    if data.empty or len(data) < 100:
+        return 0.0, 0.0
+
+    # Ensure we drop NaNs before extracting arrays
     clean_data = data.dropna(subset=['Sea Level'])
-    if len(clean_data) == 0:
+    if clean_data.empty:
         return 0.0, 0.0
 
-    # 2. Prepare time and levels
-    t_seconds = (clean_data.index - clean_data.index[0]).total_seconds().values
-    levels = clean_data['Sea Level'].values
+    levels = clean_data['Sea Level'].values.astype(float)
 
-    # 3. Setup and Run Analysis
+    # Get the starting time (epoch) and convert the timeline to seconds
+    t0 = clean_data.index[0]
+    t_seconds = (clean_data.index - t0).total_seconds().values.astype(float)
+
+    # Initialize the constituents
     tide = uptide.Tides(['M2', 'S2'])
+    
+    # FIX 1: Set the initial time so uptide can calculate astronomical positions
+    tide.set_initial_time(t0.to_pydatetime())
 
-    # We use a try/except block to catch any internal library crashes
     try:
-        res = uptide.harmonic_analysis(tide, levels, t_seconds)
+        # Run the harmonic analysis
+        coeffs = uptide.harmonic_analysis(tide, levels, t_seconds)
 
-        # Check if result exists and contains the amplitude array
-        if res is not None and len(res) > 0 and res[0] is not None:
-            amplitudes = res[0]
-            return float(amplitudes[0]), float(amplitudes[1])
-    except Exception: # pylint: disable=broad-except
-        return 0.0, 0.0
+        # Handle different return formats depending on the uptide version
+        if isinstance(coeffs, tuple):
+            coeffs = coeffs[0]
 
-    return 0.0, 0.0
+        # FIX 2: Calculate the amplitude magnitude using np.abs
+        m2_amp = float(np.abs(coeffs[0]))
+        s2_amp = float(np.abs(coeffs[1]))
+
+        return m2_amp, s2_amp
+
+    except Exception as e:
+        # FIX 3: Print the actual error to the console instead of silently returning 0
+        print(f"Harmonic analysis failed: {e}")
+        raise
+
+def find_longest_contiguous_period(data):
+    """
+    Finds the longest stretch of data without gaps.
+    """
+    if data.empty:
+        return 0
+    # Create a boolean mask where True means the gap is standard (e.g., 15 or 60 mins)
+    # We find where the time difference changes
+    time_diffs = data.index.to_series().diff()
+    # Any gap larger than the most common gap is a break
+    is_break = time_diffs > time_diffs.median()
+    # Group by the breaks and find the size of the largest group
+    group_ids = is_break.cumsum()
+    longest_period = data.groupby(group_ids).size().max()
+    return longest_period
 
 def main(args_list=None):
-    """
-    Calculates M2 and S2 components.
-    """
-    # 1. Setup the Parser
     parser = argparse.ArgumentParser(description='Analyze tidal data')
     parser.add_argument('directory', help='Directory containing tidal data')
     parser.add_argument('-v', '--verbose', action='store_true', help='Output to screen')
-
     args, _ = parser.parse_known_args(args_list)
 
-    # 2. Find the files
     folder = args.directory
     files = sorted([os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.txt')])
 
-    # 3. Process each file and collect results
-    all_results = []
-    for file_path in files:
-        data = read_tidal_data(file_path)
-        slope, _ = sea_level_rise(data)
-        amps = calculate_tidal_components(data)
+    # Load and join all data for the station
+    full_data = pd.DataFrame()
+    for f in files:
+        year_data = read_tidal_data(f)
+        full_data = pd.concat([full_data, year_data])
 
-        # Exact formatting for the output string
-        output_line = (f"{os.path.basename(file_path)}: "
-                       f"M2 amplitude {amps[0]:.3f}m, "
-                       f"S2 amplitude {amps[1]:.3f}m, "
-                       f"Sea-level rise {slope:.2e} m/day")
+    # Ensure it's sorted and no duplicates
+    full_data = full_data.sort_index()
+    full_data = full_data[~full_data.index.duplicated(keep='first')]
 
-        all_results.append(output_line)
+    # Perform Analysis
+    m2, s2 = calculate_tidal_components(full_data)
+    slope_per_day, _ = sea_level_rise(full_data)
+    rise_per_year = slope_per_day * 365.25
+    longest_stretch = find_longest_contiguous_period(full_data)
 
-        if args.verbose:
-            print(output_line)
+    # Format Output
+    station_name = os.path.basename(os.path.normpath(folder)).capitalize()
+    output = (
+        f"Station: {station_name}\n"
+        f"M2 amplitude: {m2:.3f} m\n"
+        f"S2 amplitude: {s2:.3f} m\n"
+        f"Sea-level rise: {rise_per_year:.4f} m/year\n"
+        f"Longest contiguous period: {longest_stretch} records"
+    )
 
-    # Final output handling - SILENT unless verbose
-    if not args.verbose and all_results:
-        out_name = f"{os.path.basename(os.path.normpath(folder))}_report.txt"
-        with open(out_name, 'w', encoding='utf-8') as f:
-            for line in all_results:
-                f.write(line + '\n')
+    if args.verbose:
+        print(output)
+    else:
+        # Save to file as per rules
+        with open(f"{station_name.lower()}_report.txt", "w") as f:
+            f.write(output)
 
 if __name__ == '__main__':
     main()
