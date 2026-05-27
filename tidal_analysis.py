@@ -8,6 +8,7 @@ import argparse
 import os
 # Kept to prevent a NameError in test_tides.py due to a missing test dependency
 import datetime  # pylint: disable=unused-import
+import matplotlib.dates as mdates
 
 # Third-party library imports
 import numpy as np
@@ -16,50 +17,98 @@ import uptide
 from scipy.stats import linregress
 
 def read_tidal_data(file_path):
-    # Using names that match your BODC image exactly
+    """
+    Reads tidal data, keeping Date/Time columns to satisfy test requirements.
+    """
     data = pd.read_csv(
-        file_path, 
-        sep=r'\s+', 
-        skiprows=11, 
+        file_path,
+        sep=r'\s+',
+        skiprows=11,
         names=['RowID', 'Date', 'Time', 'Sea Level', 'Residual'],
         usecols=['Date', 'Time', 'Sea Level']
     )
-    # Convert 'M', 'T', 'N' to NaN and drop them
+
+    # Convert to numeric
     data['Sea Level'] = pd.to_numeric(data['Sea Level'], errors='coerce')
+
+    # Create the datetime index but DO NOT drop the original columns yet
     data['datetime'] = pd.to_datetime(data['Date'] + ' ' + data['Time'], errors='coerce')
     data.set_index('datetime', inplace=True)
-    return data.dropna(subset=['Sea Level'])
+
+    # Return Date, Time, and Sea Level to satisfy the test's .drop() requirement
+    return data[['Date', 'Time', 'Sea Level']]
 
 def extract_single_year_remove_mean(year, data):
     """
-    Extracts data for a specific year and removes the annual mean.
+    Extracts data for a specific year and ensures exactly 8760/8784 rows.
     """
-    year_data = data.loc[str(year)].copy()
+    # Create a full range of hourly timestamps for that year
+    start_date = f"{year}-01-01 00:00:00"
+    end_date = f"{year}-12-31 23:00:00"
+    full_year_range = pd.date_range(start=start_date, end=end_date, freq='h')
+
+    # Extract what we have and reindex to the full year
+    # This fills in missing hours with NaN so the row count is perfect
+    year_data = data.reindex(full_year_range)
+
+    # Remove mean using only valid data
     annual_mean = year_data['Sea Level'].mean()
     year_data['Sea Level'] -= annual_mean
+
+    # Name the index to match what some tests expect
+    year_data.index.name = 'datetime'
+
     return year_data
 
 def extract_section_remove_mean(start, end, data):
     """
-    Extracts a specific time range and removes the mean of that section.
+    Extracts a specific time range and removes the mean.
+    Ensures the end date includes the full day to match test expectations.
     """
-    section = data.loc[start:end].copy()
+    # Convert strings to datetime objects
+    start_dt = pd.to_datetime(start)
+    end_dt = pd.to_datetime(end)
+
+    # If the end date has no time component (it's 00:00:00),
+    # extend it to the end of that day (23:00:00)
+    if end_dt.hour == 0 and end_dt.minute == 0:
+        end_dt = end_dt + pd.Timedelta(hours=23)
+
+    # Create the full hourly range
+    full_range = pd.date_range(start=start_dt, end=end_dt, freq='h')
+
+    # Reindex fills in missing timestamps with NaN
+    section = data.reindex(full_range)
+
+    # Remove mean
     section_mean = section['Sea Level'].mean()
     section['Sea Level'] = section['Sea Level'] - section_mean
+
+    # Set index name for consistency
+    section.index.name = 'datetime'
+
     return section
 
 def join_data(data1, data2):
     """
-    Joins two dataframes, handles overlaps, and ensures chronological order.
+    Joins two dataframes and ensures the resulting index is a 
+    contiguous hourly range from the earliest to the latest date.
     """
     # 1. Combine the dataframes
     joined_df = pd.concat([data1, data2])
 
-    # 2. Sort the index FIRST (This is the most important step)
+    # 2. Sort and remove duplicates
     joined_df = joined_df.sort_index()
-
-    # 3. Remove any duplicates (like midnight on Jan 1st if it appears in both files)
     joined_df = joined_df[~joined_df.index.duplicated(keep='first')]
+
+    # 3. Create a full hourly range from the very start to the very end
+    full_range = pd.date_range(start=joined_df.index.min(),
+                               end=joined_df.index.max(),
+                               freq='h')
+
+    # 4. Reindex to ensure the row count matches exactly what the test expects
+    joined_df = joined_df.reindex(full_range)
+    joined_df.index.name = 'datetime'
 
     return joined_df
 
@@ -67,19 +116,15 @@ def sea_level_rise(data):
     """
     Calculates the slope of sea level rise in meters per day.
     """
-    # Ensure we aren't working with an empty slice
     clean_data = data.dropna(subset=['Sea Level'])
 
     if len(clean_data) < 2:
-        # We need at least two points for a line
         return 0.0, 1.0
 
-    # High precision time calculation
-    # Using .index[0] on clean_data ensures we start at the first valid point
-    t_start = clean_data.index[0]
-    days = (clean_data.index - t_start).total_seconds() / 86400.0
+    # Use matplotlib.dates to get a standardized float representation of days
+    days = mdates.date2num(clean_data.index.to_pydatetime())
 
-    slope, _, _, _, p_value = linregress(days, clean_data['Sea Level'])
+    slope, _, _, p_value, _ = linregress(days, clean_data['Sea Level'])
 
     return slope, p_value
 
@@ -131,23 +176,19 @@ def calculate_tidal_components(data):
     """
     Fits M2 and S2 tidal cycles to the data.
     """
-    if data.empty or len(data) < 100:
-        return 0.0, 0.0
-
-    # Ensure we drop NaNs before extracting arrays
+    # FIX: Drop NaNs here, right before the math, so we don't break uptide
     clean_data = data.dropna(subset=['Sea Level'])
-    if clean_data.empty:
+
+    if clean_data.empty or len(clean_data) < 100:
         return 0.0, 0.0
 
     levels = clean_data['Sea Level'].values.astype(float)
-
-    # Get the starting time (epoch) and convert the timeline to seconds
     t0 = clean_data.index[0]
     t_seconds = (clean_data.index - t0).total_seconds().values.astype(float)
 
     # Initialize the constituents
     tide = uptide.Tides(['M2', 'S2'])
-    
+
     # FIX 1: Set the initial time so uptide can calculate astronomical positions
     tide.set_initial_time(t0.to_pydatetime())
 
@@ -187,6 +228,9 @@ def find_longest_contiguous_period(data):
     return longest_period
 
 def main(args_list=None):
+    """
+    Main entry point for the tidal analysis script.
+    """
     parser = argparse.ArgumentParser(description='Analyze tidal data')
     parser.add_argument('directory', help='Directory containing tidal data')
     parser.add_argument('-v', '--verbose', action='store_true', help='Output to screen')
@@ -225,7 +269,7 @@ def main(args_list=None):
         print(output)
     else:
         # Save to file as per rules
-        with open(f"{station_name.lower()}_report.txt", "w") as f:
+        with open(f"{station_name.lower()}_report.txt", "w", encoding="utf-8") as f:
             f.write(output)
 
 if __name__ == '__main__':
